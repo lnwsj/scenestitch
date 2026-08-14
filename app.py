@@ -172,6 +172,257 @@ WHISPER_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
+# SQLite persistence (job history)
+# ---------------------------------------------------------------------------
+DB_PATH = Path(os.environ.get("SCENESTITCH_DB", str(APP_ROOT / "data" / "scenestitch.db")))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DB_LOCK = threading.Lock()
+
+OUTPUT_TTL_DAYS = int(os.environ.get("SCENESTITCH_OUTPUT_TTL_DAYS", "7"))
+UPLOAD_TTL_HOURS = int(os.environ.get("SCENESTITCH_UPLOAD_TTL_HOURS", "24"))
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id      TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    progress    REAL DEFAULT 0,
+    message     TEXT DEFAULT '',
+    created_at  REAL NOT NULL,
+    started_at  REAL,
+    finished_at REAL,
+    output_path TEXT,
+    srt_path    TEXT,
+    error       TEXT,
+    meta_json   TEXT,
+    input_count INTEGER DEFAULT 0,
+    output_size INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC);
+"""
+
+
+def _db_conn():
+    import sqlite3
+    c = sqlite3.connect(str(DB_PATH), timeout=30, isolation_level=None)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    return c
+
+
+def db_init():
+    with DB_LOCK, _db_conn() as c:
+        c.executescript(DB_SCHEMA)
+
+
+def db_insert_job(job: Job):
+    with DB_LOCK, _db_conn() as c:
+        c.execute(
+            """INSERT INTO jobs
+            (job_id, kind, status, progress, message, created_at, started_at, finished_at,
+             output_path, srt_path, error, meta_json, input_count, output_size)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                job.job_id, job.kind, job.status, job.progress, job.message,
+                job.created_at, job.started_at, job.finished_at,
+                job.output_path, job.srt_path, job.error,
+                json.dumps(job.meta, ensure_ascii=False) if job.meta else "{}",
+                len(job.meta.get("input_count", []) if isinstance(job.meta.get("input_count"), list) else []),
+                0,
+            ),
+        )
+
+
+def db_update_job(job: Job):
+    out_size = 0
+    if job.output_path and Path(job.output_path).is_file():
+        try:
+            out_size = Path(job.output_path).stat().st_size
+        except Exception:
+            pass
+    in_count = 0
+    if isinstance(job.meta.get("inputs"), list):
+        in_count = len(job.meta["inputs"])
+    elif isinstance(job.meta.get("input_count"), int):
+        in_count = job.meta["input_count"]
+    with DB_LOCK, _db_conn() as c:
+        c.execute(
+            """UPDATE jobs SET
+              status=?, progress=?, message=?, started_at=?, finished_at=?,
+              output_path=?, srt_path=?, error=?, meta_json=?, input_count=?, output_size=?
+            WHERE job_id=?""",
+            (
+                job.status, job.progress, job.message, job.started_at, job.finished_at,
+                job.output_path, job.srt_path, job.error,
+                json.dumps(job.meta, ensure_ascii=False) if job.meta else "{}",
+                in_count, out_size, job.job_id,
+            ),
+        )
+
+
+def db_list_jobs(
+    status: Optional[str] = None,
+    kind: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    q = "SELECT * FROM jobs WHERE 1=1"
+    args: List[Any] = []
+    if status:
+        q += " AND status=?"
+        args.append(status)
+    if kind:
+        q += " AND kind=?"
+        args.append(kind)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    args.extend([limit, offset])
+    with DB_LOCK, _db_conn() as c:
+        rows = c.execute(q, args).fetchall()
+    return [_job_row_to_dict(r) for r in rows]
+
+
+def db_get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with DB_LOCK, _db_conn() as c:
+        r = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return _job_row_to_dict(r) if r else None
+
+
+def db_delete_job(job_id: str) -> Dict[str, Any]:
+    """Delete job record + associated files. Returns {deleted, files_removed, freed_bytes}."""
+    job = db_get_job(job_id)
+    if not job:
+        return {"deleted": False}
+    removed = []
+    freed = 0
+    for p in [job.get("output_path"), job.get("srt_path")]:
+        if p and Path(p).is_file():
+            try:
+                freed += Path(p).stat().st_size
+                Path(p).unlink()
+                removed.append(str(p))
+            except Exception:
+                pass
+    # Also try removing job dir (concat intermediates, etc.)
+    job_dir = JOB_DIR / job_id
+    if job_dir.is_dir():
+        for child in job_dir.rglob("*"):
+            if child.is_file():
+                try:
+                    freed += child.stat().st_size
+                except Exception:
+                    pass
+        try:
+            shutil.rmtree(job_dir, ignore_errors=True)
+        except Exception:
+            pass
+    with DB_LOCK, _db_conn() as c:
+        c.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+    return {"deleted": True, "files_removed": removed, "freed_bytes": freed}
+
+
+def db_count_jobs() -> Dict[str, int]:
+    with DB_LOCK, _db_conn() as c:
+        rows = c.execute(
+            "SELECT status, COUNT(*) as n FROM jobs GROUP BY status"
+        ).fetchall()
+    return {r["status"]: r["n"] for r in rows}
+
+
+def db_cleanup_old(output_ttl_days: int = OUTPUT_TTL_DAYS, upload_ttl_hours: int = UPLOAD_TTL_HOURS) -> Dict[str, Any]:
+    """Delete done jobs older than output_ttl_days (and their files).
+    Delete uploaded files older than upload_ttl_hours (regardless of job).
+    Returns {jobs_deleted, files_removed, freed_bytes}."""
+    now = time.time()
+    output_cutoff = now - output_ttl_days * 86400
+    upload_cutoff = now - upload_ttl_hours * 3600
+
+    jobs_deleted = 0
+    freed = 0
+    # 1) Old done jobs
+    with DB_LOCK, _db_conn() as c:
+        rows = c.execute(
+            "SELECT job_id FROM jobs WHERE status IN ('done','error','cancelled') AND created_at < ?",
+            (output_cutoff,),
+        ).fetchall()
+    for r in rows:
+        res = db_delete_job(r["job_id"])
+        if res.get("deleted"):
+            jobs_deleted += 1
+            freed += res.get("freed_bytes", 0)
+
+    # 2) Old uploads (not referenced by any in-flight job)
+    with DB_LOCK, _db_conn() as c:
+        ref_paths = set()
+        for r in c.execute(
+            "SELECT meta_json FROM jobs WHERE status IN ('queued','running')"
+        ).fetchall():
+            try:
+                m = json.loads(r["meta_json"] or "{}")
+                for inp in m.get("inputs", []):
+                    fid = inp.get("file_id")
+                    if fid:
+                        for p in UPLOAD_DIR.glob(f"{fid}.*"):
+                            ref_paths.add(str(p.resolve()))
+            except Exception:
+                pass
+    uploads_removed = 0
+    for p in UPLOAD_DIR.iterdir():
+        if not p.is_file():
+            continue
+        if str(p.resolve()) in ref_paths:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:
+            continue
+        if mtime < upload_cutoff:
+            try:
+                freed += p.stat().st_size
+                p.unlink()
+                uploads_removed += 1
+            except Exception:
+                pass
+
+    return {
+        "jobs_deleted": jobs_deleted,
+        "uploads_removed": uploads_removed,
+        "freed_bytes": freed,
+    }
+
+
+def _job_row_to_dict(r) -> Dict[str, Any]:
+    """Convert a DB row to the same dict shape as Job.to_dict()."""
+    try:
+        meta = json.loads(r["meta_json"] or "{}")
+    except Exception:
+        meta = {}
+    return {
+        "job_id": r["job_id"],
+        "kind": r["kind"],
+        "status": r["status"],
+        "progress": round(r["progress"] or 0, 3),
+        "message": r["message"] or "",
+        "created_at": r["created_at"],
+        "started_at": r["started_at"],
+        "finished_at": r["finished_at"],
+        "elapsed": (
+            (r["finished_at"] or time.time()) - (r["started_at"] or r["created_at"])
+        ),
+        "output_url": f"/api/download/{r['job_id']}" if r["output_path"] else None,
+        "srt_url": f"/api/srt/{r['job_id']}" if r["srt_path"] else None,
+        "error": r["error"],
+        "meta": meta,
+        "input_count": r["input_count"] or 0,
+        "output_size": r["output_size"] or 0,
+    }
+
+
+# Initialize DB on import
+db_init()
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="SceneStitch", version=APP_VERSION)
@@ -225,6 +476,46 @@ async def health():
 _GPU_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 _GPU_LOCK = threading.Lock()
 _GPU_TTL = 2.0  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Background cleanup task
+# ---------------------------------------------------------------------------
+_CLEANUP_INTERVAL_SEC = 3600  # 1 hour
+_cleanup_thread: Optional[threading.Thread] = None
+_cleanup_stop = threading.Event()
+
+
+def _cleanup_loop():
+    while not _cleanup_stop.is_set():
+        try:
+            res = db_cleanup_old()
+            if res.get("jobs_deleted") or res.get("uploads_removed"):
+                print(f"[cleanup] removed {res['jobs_deleted']} jobs, {res['uploads_removed']} uploads, freed {res['freed_bytes']//1024} KB")
+        except Exception as e:
+            print(f"[cleanup] error: {e}")
+        _cleanup_stop.wait(_CLEANUP_INTERVAL_SEC)
+
+
+def _start_cleanup_thread():
+    global _cleanup_thread
+    if _cleanup_thread and _cleanup_thread.is_alive():
+        return
+    _cleanup_stop.clear()
+    _cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True, name="cleanup-loop")
+    _cleanup_thread.start()
+
+
+@app.on_event("startup")
+def _on_startup():
+    _start_cleanup_thread()
+    print(f"[startup] DB: {DB_PATH}")
+    print(f"[startup] output TTL: {OUTPUT_TTL_DAYS}d, upload TTL: {UPLOAD_TTL_HOURS}h")
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _cleanup_stop.set()
 
 
 def gpu_info() -> Optional[Dict[str, Any]]:
@@ -441,11 +732,15 @@ def run_whisper_job(job: Job, video_path: str, model_name: str, language: Option
     except Exception as e:
         job.status = "error"
         job.error = f"Whisper load failed: {e}"
+        job.finished_at = time.time()
+        db_update_job(job)
         return
+    db_update_job(job)
 
     job.message = "Transcribing audio…"
     job.log.append(job.message)
     job.progress = 0.1
+    db_update_job(job)
 
     lang = None if not language or language == "auto" else language
     try:
@@ -458,10 +753,13 @@ def run_whisper_job(job: Job, video_path: str, model_name: str, language: Option
         )
         total_dur = float(info.duration or 0.0)
         srt_segments = []
+        last_db_update = 0.0
         for i, seg in enumerate(segments_iter):
             if job.cancel_flag:
                 job.status = "cancelled"
                 job.message = "Cancelled"
+                job.finished_at = time.time()
+                db_update_job(job)
                 return
             srt_segments.append(srt.Subtitle(
                 index=i + 1,
@@ -472,6 +770,11 @@ def run_whisper_job(job: Job, video_path: str, model_name: str, language: Option
             if total_dur > 0:
                 job.progress = min(0.95, 0.1 + 0.85 * (seg.end / total_dur))
                 job.message = f"Transcribing… {seg.end:.1f}s / {total_dur:.1f}s"
+            # Throttle DB writes to every 2s
+            now = time.time()
+            if now - last_db_update > 2.0:
+                db_update_job(job)
+                last_db_update = now
         srt_text = srt.compose(srt_segments)
         # Save to job dir
         job_dir = JOB_DIR / job.job_id
@@ -490,10 +793,12 @@ def run_whisper_job(job: Job, video_path: str, model_name: str, language: Option
         job.progress = 1.0
         job.message = f"Done — {len(srt_segments)} segments ({info.language})"
         job.finished_at = time.time()
+        db_update_job(job)
     except Exception as e:
         job.status = "error"
         job.error = f"Whisper failed: {e}"
         job.finished_at = time.time()
+        db_update_job(job)
 
 
 def enqueue_job(job: Job, target):
@@ -607,6 +912,8 @@ def run_render_job(
     if not FFMPEG_BIN:
         job.status = "error"
         job.error = "ffmpeg not available"
+        job.finished_at = time.time()
+        db_update_job(job)
         return
 
     # Resolve input paths
@@ -616,18 +923,24 @@ def run_render_job(
         if not file_id:
             job.status = "error"
             job.error = "missing file_id"
+            job.finished_at = time.time()
+            db_update_job(job)
             return
         # Find actual file
         candidates = list(UPLOAD_DIR.glob(f"{file_id}.*"))
         if not candidates:
             job.status = "error"
             job.error = f"file not found: {file_id}"
+            job.finished_at = time.time()
+            db_update_job(job)
             return
         in_paths.append(str(candidates[0]))
 
     if not in_paths:
         job.status = "error"
         job.error = "no input files"
+        job.finished_at = time.time()
+        db_update_job(job)
         return
 
     # 1) Concat (use concat demuxer, normalize to common params to avoid sync issues)
@@ -638,6 +951,7 @@ def run_render_job(
     job.message = "Concatenating videos…"
     job.progress = 0.05
     job.log.append(job.message)
+    db_update_job(job)
 
     if transition == "fade" and len(in_paths) >= 2:
         # Use xfade + acrossfade for crossfaded transitions.
@@ -740,7 +1054,7 @@ def run_render_job(
         ]
 
     job.log.append("ffmpeg concat: " + " ".join(cmd[:6]) + " …")
-    rc, log = _run_ffmpeg(cmd, total_duration=None)
+    rc, log = _run_ffmpeg(cmd, total_duration=None, job=job)
     if rc != 0 or job.cancel_flag:
         if job.cancel_flag:
             job.status = "cancelled"
@@ -749,10 +1063,14 @@ def run_render_job(
             job.status = "error"
             job.error = f"concat failed (rc={rc})"
             job.log.extend(log.splitlines()[-30:])
+        job.finished_at = time.time()
+        db_update_job(job)
         return
     if not concat_path.is_file() or concat_path.stat().st_size < 100:
         job.status = "error"
         job.error = "concat produced no file"
+        job.finished_at = time.time()
+        db_update_job(job)
         return
 
     # 2) Burn subtitles
@@ -802,6 +1120,8 @@ def run_render_job(
                 job.status = "error"
                 job.error = f"burn failed (rc={rc})"
                 job.log.extend(log.splitlines()[-30:])
+            job.finished_at = time.time()
+            db_update_job(job)
             return
         final_path = out_path
     else:
@@ -812,6 +1132,8 @@ def run_render_job(
     if not final_path.is_file() or final_path.stat().st_size < 100:
         job.status = "error"
         job.error = "final output missing"
+        job.finished_at = time.time()
+        db_update_job(job)
         return
 
     job.output_path = str(final_path)
@@ -819,6 +1141,7 @@ def run_render_job(
     job.progress = 1.0
     job.message = f"Render complete — {final_path.stat().st_size // 1024} KB"
     job.finished_at = time.time()
+    db_update_job(job)
 
 
 def _run_ffmpeg(
@@ -844,6 +1167,7 @@ def _run_ffmpeg(
         cwd=cwd,
     )
     log_buf = []
+    last_db_update = 0.0
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.rstrip("\n")
@@ -856,6 +1180,14 @@ def _run_ffmpeg(
                 job.message = f"Rendering… {t:.1f}s / {total_duration:.1f}s"
             except Exception:
                 pass
+            # Throttle DB writes to every 2s
+            now = time.time()
+            if now - last_db_update > 2.0:
+                try:
+                    db_update_job(job)
+                except Exception:
+                    pass
+                last_db_update = now
         if job is not None and job.cancel_flag:
             try:
                 proc.terminate()
@@ -895,6 +1227,7 @@ async def job_whisper(
     job.meta = {"file_id": file_id, "model": model, "language": language}
     with JOB_LOCK:
         JOBS[job.job_id] = job
+    db_insert_job(job)
     target = lambda: run_whisper_job(job, path, model, language)
     enqueue_job(job, target)
     return {"job_id": job.job_id, "status": job.status}
@@ -915,6 +1248,7 @@ async def job_render(payload: Dict[str, Any]):
 
     job = Job(job_id=f"r_{uuid.uuid4().hex[:10]}", kind="render")
     job.meta = {
+        "inputs": inputs,
         "input_count": len(inputs),
         "has_subs": bool(srt_text.strip()),
         "srt_kind": srt_kind,
@@ -923,6 +1257,7 @@ async def job_render(payload: Dict[str, Any]):
     }
     with JOB_LOCK:
         JOBS[job.job_id] = job
+    db_insert_job(job)
     target = lambda: run_render_job(job, inputs, srt_text, srt_kind, style, output_settings)
     enqueue_job(job, target)
     return {"job_id": job.job_id, "status": job.status}
@@ -930,38 +1265,135 @@ async def job_render(payload: Dict[str, Any]):
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
+    # In-memory first (live status), then DB (history)
     job = JOBS.get(job_id)
-    if not job:
+    if job:
+        return job.to_dict()
+    rec = db_get_job(job_id)
+    if not rec:
         raise HTTPException(404, "job not found")
-    return job.to_dict()
+    return rec
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str):
     job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
-    job.cancel_flag = True
-    return {"ok": True}
+    if job:
+        job.cancel_flag = True
+        return {"ok": True}
+    # Allow cancel for in-flight jobs only; history jobs are immutable
+    raise HTTPException(404, "job not found or already finished")
 
 
 @app.get("/api/jobs")
-async def list_jobs(limit: int = 50):
-    items = sorted(JOBS.values(), key=lambda j: j.created_at, reverse=True)[:limit]
-    return {"jobs": [j.to_dict() for j in items]}
+async def list_jobs(
+    status: Optional[str] = None,
+    kind: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    source: str = "all",  # all | live | history
+):
+    """List jobs. `source`:
+      - all: merge live (in-memory) with history (DB), live first
+      - live: only in-memory running/queued jobs
+      - history: only DB records (finished jobs)
+    """
+    seen = set()
+    items: List[Dict[str, Any]] = []
+    if source in ("all", "live"):
+        live = [j.to_dict() for j in sorted(JOBS.values(), key=lambda j: j.created_at, reverse=True)]
+        for it in live:
+            if (status and it["status"] != status) or (kind and it["kind"] != kind):
+                continue
+            items.append(it)
+            seen.add(it["job_id"])
+    if source in ("all", "history"):
+        for it in db_list_jobs(status=status, kind=kind, limit=limit, offset=offset):
+            if it["job_id"] in seen:
+                continue
+            items.append(it)
+        items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+    if limit:
+        items = items[:limit]
+    # Add counts for summary
+    counts = db_count_jobs()
+    return {"jobs": items, "counts": counts, "source": source}
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str):
+    """Delete a job record + its output file. Cannot delete in-flight jobs."""
+    job = JOBS.get(job_id)
+    if job and job.status in ("queued", "running"):
+        raise HTTPException(409, "cannot delete running job — cancel first")
+    res = db_delete_job(job_id)
+    if not res.get("deleted"):
+        raise HTTPException(404, "job not found")
+    # Also drop from in-memory cache
+    with JOB_LOCK:
+        JOBS.pop(job_id, None)
+    return res
+
+
+@app.post("/api/cleanup")
+async def trigger_cleanup():
+    """Manually trigger cleanup. Returns {jobs_deleted, uploads_removed, freed_bytes}."""
+    return db_cleanup_old()
+
+
+@app.get("/api/storage")
+async def storage_info():
+    """Show disk usage of uploads, jobs, outputs."""
+    def dir_size(p: Path) -> int:
+        return sum(c.stat().st_size for c in p.rglob("*") if c.is_file()) if p.exists() else 0
+    return {
+        "uploads_bytes": dir_size(UPLOAD_DIR),
+        "jobs_bytes": dir_size(JOB_DIR),
+        "outputs_bytes": dir_size(OUTPUT_DIR),
+        "db_bytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "upload_count": sum(1 for _ in UPLOAD_DIR.iterdir() if _.is_file()),
+        "output_count": sum(1 for _ in OUTPUT_DIR.iterdir() if _.is_file()),
+        "ttl_days": OUTPUT_TTL_DAYS,
+        "ttl_hours_upload": UPLOAD_TTL_HOURS,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Downloads
+# Downloads (live + history)
 # ---------------------------------------------------------------------------
+def _resolve_output_path(job_id: str) -> Optional[Path]:
+    job = JOBS.get(job_id)
+    if job and job.output_path:
+        p = Path(job.output_path)
+        if p.is_file():
+            return p
+    rec = db_get_job(job_id)
+    if rec and rec.get("output_path"):
+        p = Path(rec["output_path"])
+        if p.is_file():
+            return p
+    return None
+
+
+def _resolve_srt_path(job_id: str) -> Optional[Path]:
+    job = JOBS.get(job_id)
+    if job and job.srt_path:
+        p = Path(job.srt_path)
+        if p.is_file():
+            return p
+    rec = db_get_job(job_id)
+    if rec and rec.get("srt_path"):
+        p = Path(rec["srt_path"])
+        if p.is_file():
+            return p
+    return None
+
+
 @app.get("/api/download/{job_id}")
 async def download(job_id: str):
-    job = JOBS.get(job_id)
-    if not job or not job.output_path:
+    p = _resolve_output_path(job_id)
+    if not p:
         raise HTTPException(404, "no output")
-    p = Path(job.output_path)
-    if not p.is_file():
-        raise HTTPException(404, "file missing")
     return FileResponse(
         str(p),
         media_type="video/mp4",
@@ -971,12 +1403,9 @@ async def download(job_id: str):
 
 @app.get("/api/srt/{job_id}")
 async def get_srt(job_id: str):
-    job = JOBS.get(job_id)
-    if not job or not job.srt_path:
+    p = _resolve_srt_path(job_id)
+    if not p:
         raise HTTPException(404, "no srt")
-    p = Path(job.srt_path)
-    if not p.is_file():
-        raise HTTPException(404, "srt missing")
     return PlainTextResponse(p.read_text(encoding="utf-8"), media_type="text/plain")
 
 

@@ -325,6 +325,21 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px}
   </div>
 </main>
 
+<section class="card" style="max-width:1280px;margin:0 auto 24px;padding:18px">
+  <h2>📚 ประวัติงาน (History) <span class="right">
+    <select id="history-filter" style="display:inline-block;width:auto;padding:4px 8px;font-size:12px">
+      <option value="all">ทั้งหมด</option>
+      <option value="running">กำลังทำ</option>
+      <option value="done">เสร็จ</option>
+      <option value="error">ผิดพลาด</option>
+    </select>
+    <button class="btn ghost sm" id="history-cleanup-btn" style="margin-left:6px" title="ลบ outputs > 7 วัน + uploads > 24 ชม.">🧹 Cleanup</button>
+    <button class="btn ghost sm" id="history-refresh-btn" style="margin-left:6px">🔄 รีเฟรช</button>
+  </span></h2>
+  <div id="history-stats" class="muted" style="font-size:11px;margin-bottom:8px">กำลังโหลด…</div>
+  <div id="history-list"></div>
+</section>
+
 <div class="toast-container" id="toasts"></div>
 
 <footer>
@@ -342,6 +357,9 @@ const STATE = {
   whisperJob: null,
   srtText: "",
   selectedFileIdForWhisper: null,
+  history: [],       // [{job_id, status, kind, message, created_at, ...}]
+  historyFilter: "all", // all | done | error | running
+  storage: null,     // {uploads_bytes, outputs_bytes, ...}
 };
 
 // ---------- utils ----------
@@ -658,6 +676,7 @@ async function pollWhisper(jobId) {
       document.querySelector('[data-tab="manual"]').classList.add("active");
       $('[data-panel="manual"]').classList.add("active");
       toast(`Whisper เสร็จ · ${j.meta.segments} cues (${j.meta.language})`, "ok", 4000);
+      loadHistory();
       setTimeout(() => $("whisper-progress").classList.add("hidden"), 1500);
       $("whisper-btn").disabled = false;
       break;
@@ -820,6 +839,7 @@ async function pollRender(jobId) {
       $("cancel-btn").disabled = true;
       STATE.job = null;
       STATE.currentJobId = null;
+      loadHistory(); // refresh history when render completes
       break;
     } else if (j.status === "error") {
       $("render-status").innerHTML = '<span style="color:var(--err)">ผิดพลาด: ' + escapeHtml(j.error || "?") + "</span>";
@@ -847,6 +867,129 @@ async function pollRender(jobId) {
 // init
 renderVList();
 updateSrtStats();
+loadHistory();
+setInterval(loadHistory, 15000); // refresh history every 15s
+
+// ---------- history ----------
+async function loadHistory() {
+  try {
+    const r = await api(`/api/jobs?source=all&limit=20&status=${STATE.historyFilter === "all" ? "" : STATE.historyFilter}`);
+    STATE.history = r.jobs || [];
+    renderHistory();
+    updateHistoryStats(r.counts || {});
+  } catch (e) {
+    $("history-stats").textContent = "โหลดประวัติไม่สำเร็จ: " + e.message;
+  }
+  // Also fetch storage info
+  try {
+    const s = await api("/api/storage");
+    STATE.storage = s;
+    const total = s.uploads_bytes + s.jobs_bytes + s.outputs_bytes;
+    if (s && total > 0) {
+      $("history-stats").innerHTML += ` <span class="muted" style="margin-left:8px">· disk: ${humanSize(s.outputs_bytes)} outputs · ${humanSize(s.uploads_bytes)} uploads (TTL ${s.ttl_days}d / ${s.ttl_hours_upload}h)</span>`;
+    }
+  } catch (e) { /* silent */ }
+}
+
+function updateHistoryStats(counts) {
+  const total = (counts.done || 0) + (counts.error || 0) + (counts.running || 0) + (counts.queued || 0) + (counts.cancelled || 0);
+  const done = counts.done || 0, err = counts.error || 0, run = (counts.running || 0) + (counts.queued || 0);
+  $("history-stats").innerHTML =
+    `ทั้งหมด <b>${total}</b> · เสร็จ <span style="color:var(--ok)">${done}</span> · กำลังทำ <span style="color:var(--accent-2)">${run}</span> · ผิดพลาด <span style="color:var(--err)">${err}</span>`;
+}
+
+function timeAgo(ts) {
+  if (!ts) return "—";
+  const sec = Math.floor(Date.now() / 1000 - ts);
+  if (sec < 60) return `${sec} วินาทีที่แล้ว`;
+  if (sec < 3600) return `${Math.floor(sec/60)} นาทีที่แล้ว`;
+  if (sec < 86400) return `${Math.floor(sec/3600)} ชม. ที่แล้ว`;
+  return `${Math.floor(sec/86400)} วันที่แล้ว`;
+}
+
+function statusBadge(s) {
+  const map = {
+    done: ["ok", "✓ เสร็จ"],
+    error: ["err", "✗ ผิดพลาด"],
+    running: ["warn", "⏳ กำลังทำ"],
+    queued: ["warn", "⏸ รอคิว"],
+    cancelled: ["", "⏹ ยกเลิก"],
+  };
+  const [cls, label] = map[s] || ["", s];
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function kindLabel(k) {
+  return { render: "🎞️ render", whisper: "🎙️ whisper" }[k] || k;
+}
+
+function renderHistory() {
+  const root = $("history-list");
+  if (!STATE.history.length) {
+    root.innerHTML = '<div class="empty">ยังไม่มีงาน — render หรือ whisper ครั้งแรกจะมาอยู่ที่นี่</div>';
+    return;
+  }
+  root.innerHTML = STATE.history.map(j => {
+    const isLive = j.status === "running" || j.status === "queued";
+    const sizeStr = j.output_size ? ` · ${humanSize(j.output_size)}` : "";
+    const inputs = j.input_count || (j.meta && j.meta.input_count) || 0;
+    const msg = j.message ? escapeHtml(j.message.slice(0, 80)) : "";
+    const err = j.error ? ` · <span style="color:var(--err)">${escapeHtml(j.error.slice(0, 60))}</span>` : "";
+    return `
+      <div class="vitem" data-id="${j.job_id}" style="cursor:default">
+        <div class="num">${kindLabel(j.kind).split(' ')[0]}</div>
+        <div class="info" style="flex:1;min-width:0">
+          <div class="name" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${statusBadge(j.status)}
+            <code style="font-size:11px;color:var(--muted)">${j.job_id}</code>
+            <span class="muted" style="font-size:11px">${timeAgo(j.created_at)}${sizeStr} · ${inputs} ไฟล์</span>
+          </div>
+          <div class="meta" style="margin-top:2px">${msg}${err}</div>
+        </div>
+        <div class="row" style="gap:4px">
+          ${j.output_url ? `<a class="btn sm" href="${j.output_url}" download>⬇</a>` : ""}
+          ${j.srt_url ? `<a class="btn ghost sm" href="${j.srt_url}" target="_blank">SRT</a>` : ""}
+          ${!isLive ? `<button class="btn ghost sm" data-del="${j.job_id}" style="color:var(--err)">✕</button>` : `<span class="pill warn" title="กำลังทำ">running</span>`}
+        </div>
+      </div>
+    `;
+  }).join("");
+  // Wire delete buttons
+  root.querySelectorAll("[data-del]").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute("data-del");
+      if (!confirm("ลบงาน " + id + " ?\n(ไฟล์ output จะถูกลบด้วย)")) return;
+      try {
+        const r = await api(`/api/jobs/${id}`, { method: "DELETE" });
+        toast(`ลบแล้ว · freed ${humanSize(r.freed_bytes || 0)}`, "ok");
+        loadHistory();
+      } catch (err) {
+        toast("ลบไม่ได้: " + err.message, "err");
+      }
+    });
+  });
+}
+
+$("history-filter").addEventListener("change", (e) => {
+  STATE.historyFilter = e.target.value;
+  loadHistory();
+});
+$("history-refresh-btn").addEventListener("click", () => {
+  loadHistory();
+  toast("รีเฟรชประวัติแล้ว", "ok", 1000);
+});
+$("history-cleanup-btn").addEventListener("click", async () => {
+  if (!confirm("ลบ outputs ที่เก่ากว่า 7 วัน + uploads ที่เก่ากว่า 24 ชม. ใช่ไหม?")) return;
+  try {
+    const r = await api("/api/cleanup", { method: "POST" });
+    const freed = humanSize(r.freed_bytes || 0);
+    toast(`Cleanup เสร็จ · ${r.jobs_deleted} jobs, ${r.uploads_removed} uploads, freed ${freed}`, freed === "0 B" ? "ok" : "warn", 4000);
+    loadHistory();
+  } catch (e) {
+    toast("Cleanup ล้มเหลว: " + e.message, "err", 5000);
+  }
+});
 </script>
 
 </body>
