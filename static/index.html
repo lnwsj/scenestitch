@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SceneStitch · ต่อฉาก + ทำซับ</title>
+<style>
+:root{
+  --bg:#0b0d12; --panel:#12161f; --panel-2:#1a2030; --line:#232b3d;
+  --text:#e7eaf3; --muted:#8b93a7; --accent:#5cf0c8; --accent-2:#7aa2ff;
+  --warn:#ffb454; --err:#ff6b6b; --ok:#5cf0c8;
+  --shadow:0 6px 24px rgba(0,0,0,.35);
+  --r:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",Roboto,sans-serif}
+a{color:var(--accent-2);text-decoration:none}
+header{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#0b0d12 60%,rgba(11,13,18,.6));backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;gap:16px}
+header h1{font-size:18px;font-weight:700;margin:0;letter-spacing:.5px}
+header h1 .accent{color:var(--accent)}
+header .ver{font-size:11px;color:var(--muted);margin-left:6px;padding:2px 6px;border:1px solid var(--line);border-radius:999px}
+header .spacer{flex:1}
+header .badge{font-size:11px;padding:3px 8px;border-radius:999px;background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}
+header .badge.ok{color:var(--ok);border-color:rgba(92,240,200,.3)}
+header .badge.warn{color:var(--warn);border-color:rgba(255,180,84,.3)}
+header .badge.err{color:var(--err);border-color:rgba(255,107,107,.3)}
+
+main{padding:24px;max-width:1280px;margin:0 auto;display:grid;grid-template-columns:1.2fr 1fr;gap:24px}
+@media (max-width:980px){ main{grid-template-columns:1fr} }
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:var(--shadow)}
+.card h2{font-size:14px;font-weight:700;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+.card h2 .dot{width:6px;height:6px;background:var(--accent);border-radius:50%}
+.card h2 .right{margin-left:auto}
+
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.col{display:flex;flex-direction:column;gap:10px}
+.muted{color:var(--muted)}
+.right{margin-left:auto}
+
+/* Drop zone */
+.dropzone{border:2px dashed var(--line);border-radius:var(--r);padding:30px 20px;text-align:center;cursor:pointer;transition:all .15s;background:var(--panel-2)}
+.dropzone:hover,.dropzone.drag{border-color:var(--accent);background:rgba(92,240,200,.05)}
+.dropzone .big{font-size:32px;margin-bottom:6px}
+.dropzone p{margin:4px 0;color:var(--muted)}
+.dropzone .hint{font-size:12px}
+
+/* Video list */
+.vlist{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.vitem{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:10px;cursor:grab;transition:all .12s}
+.vitem:active{cursor:grabbing}
+.vitem.dragging{opacity:.4;transform:scale(.98)}
+.vitem .num{width:24px;height:24px;border-radius:6px;background:var(--line);color:var(--muted);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0}
+.vitem .info{flex:1;min-width:0}
+.vitem .info .name{font-weight:600;font-size:13px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.vitem .info .meta{font-size:11px;color:var(--muted)}
+.vitem video{height:48px;border-radius:4px;background:#000;flex-shrink:0}
+.vitem .x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;padding:4px 8px;border-radius:4px}
+.vitem .x:hover{background:var(--err);color:#fff}
+.empty{text-align:center;color:var(--muted);padding:30px 20px;font-size:13px}
+
+/* Tabs */
+.tabs{display:flex;gap:2px;background:var(--panel-2);border-radius:8px;padding:3px;margin-bottom:14px}
+.tab{flex:1;padding:8px 12px;background:transparent;border:none;color:var(--muted);font-weight:600;cursor:pointer;border-radius:6px;font-size:13px;transition:all .12s}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--accent);color:#0b0d12}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* Buttons */
+button.btn{background:var(--accent);color:#0b0d12;border:none;padding:9px 18px;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px;transition:all .12s;display:inline-flex;align-items:center;gap:6px}
+button.btn:hover{filter:brightness(1.1);transform:translateY(-1px)}
+button.btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+button.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+button.btn.ghost:hover{background:var(--panel-2)}
+button.btn.danger{background:var(--err);color:#fff}
+button.btn.warn{background:var(--warn);color:#0b0d12}
+button.btn.sm{padding:5px 10px;font-size:11px}
+
+/* Inputs */
+input[type="text"],input[type="number"],select,textarea{background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:8px 10px;border-radius:6px;font:inherit;width:100%;transition:border .12s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+textarea{font-family:"SF Mono",Monaco,"Cascadia Code",monospace;font-size:12px;min-height:280px;resize:vertical;line-height:1.6}
+label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+
+/* Subtitle editor preview */
+.srt-preview{background:#000;border:1px solid var(--line);border-radius:8px;padding:14px;font-family:"SF Mono",monospace;font-size:11px;line-height:1.7;color:#cfd5e6;max-height:240px;overflow-y:auto;white-space:pre-wrap}
+.srt-preview .cue{margin:0 0 8px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:4px;border-left:2px solid var(--accent)}
+
+/* Style panel */
+.style-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.style-row .full{grid-column:1/-1}
+.color-pick{display:flex;gap:6px;align-items:center}
+.color-pick input[type="color"]{width:36px;height:36px;padding:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+
+/* Progress */
+.progress{height:6px;background:var(--panel-2);border-radius:99px;overflow:hidden;margin-top:8px}
+.progress > div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .25s;border-radius:99px}
+
+/* Job log */
+.log{background:#000;border:1px solid var(--line);border-radius:8px;padding:10px;font-family:"SF Mono",monospace;font-size:10.5px;color:#9ca3af;max-height:200px;overflow-y:auto;line-height:1.5;white-space:pre-wrap}
+
+/* Final video */
+.final{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.final video{width:100%;max-height:420px;background:#000;border-radius:6px}
+.final .actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Toast */
+.toast-container{position:fixed;top:80px;right:24px;z-index:50;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;color:var(--text);font-size:13px;box-shadow:var(--shadow);animation:slideIn .25s;pointer-events:auto;min-width:240px}
+.toast.ok{border-color:rgba(92,240,200,.4)}
+.toast.err{border-color:rgba(255,107,107,.4);color:var(--err)}
+.toast.warn{border-color:rgba(255,180,84,.4);color:var(--warn)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Helpers */
+.hidden{display:none !important}
+.pill{display:inline-block;padding:2px 7px;font-size:10px;border-radius:99px;background:var(--panel-2);color:var(--muted);border:1px solid var(--line);font-weight:600;letter-spacing:.3px}
+.pill.ok{color:var(--ok);border-color:rgba(92,240,200,.3)}
+.pill.warn{color:var(--warn);border-color:rgba(255,180,84,.3)}
+.pill.err{color:var(--err);border-color:rgba(255,107,107,.3)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+footer{text-align:center;padding:24px;color:var(--muted);font-size:11px}
+
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎬 Scene<span class="accent">Stitch</span><span class="ver">v1.0</span></h1>
+  <span class="badge" id="ffmpeg-badge">ffmpeg: …</span>
+  <span class="badge" id="whisper-badge">whisper: …</span>
+  <div class="spacer"></div>
+  <a href="https://github.com/" target="_blank" class="muted" style="font-size:12px">docs</a>
+</header>
+
+<main>
+  <!-- LEFT: videos + transition + render -->
+  <div class="col">
+    <section class="card">
+      <h2>1. วิดีโอ <span class="right"><span class="muted" id="vcount">0 ไฟล์</span></span></h2>
+      <label class="dropzone" id="dropzone">
+        <div class="big">📥</div>
+        <p><strong>ลากไฟล์มาวาง</strong> หรือคลิกเพื่อเลือก</p>
+        <p class="hint">mp4 / mov / mkv · สูงสุด 2 GB / ไฟล์ · เรียงลำดับด้วยการลาก</p>
+        <input type="file" id="file-input" accept="video/*" multiple style="display:none">
+      </label>
+      <div class="vlist" id="vlist"></div>
+    </section>
+
+    <section class="card">
+      <h2>2. การเชื่อมต่อฉาก <span class="right muted" style="font-size:11px;text-transform:none">transition</span></h2>
+      <div class="style-row">
+        <div>
+          <label>รูปแบบ</label>
+          <select id="transition">
+            <option value="cut">✂️ ตัดต่อตรง (cut)</option>
+            <option value="fade">🌫️ ค่อย ๆ จางเข้าหากัน (fade)</option>
+          </select>
+        </div>
+        <div>
+          <label>ระยะ fade (วินาที)</label>
+          <input type="number" id="fade_duration" value="0.5" step="0.1" min="0" max="3">
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>5. Render <span class="right muted" id="render-status" style="font-size:11px;text-transform:none">พร้อม</span></h2>
+      <div class="row">
+        <button class="btn" id="render-btn" disabled>🎞️ ต่อฉาก + เผาซับ</button>
+        <button class="btn ghost" id="cancel-btn" disabled>⏹ ยกเลิก</button>
+        <span class="right muted" id="render-meta" style="font-size:11px"></span>
+      </div>
+      <div class="progress hidden" id="render-progress"><div style="width:0%"></div></div>
+      <div class="log hidden" id="render-log"></div>
+      <div class="final hidden" id="final-box" style="margin-top:14px">
+        <video controls id="final-video"></video>
+        <div class="actions">
+          <a class="btn" id="download-btn" download>⬇️ ดาวน์โหลด MP4</a>
+          <button class="btn ghost" id="rerender-btn">🔄 เรนเดอร์ใหม่</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- RIGHT: subtitles + style -->
+  <div class="col">
+    <section class="card">
+      <h2>3. ซับ / คำบรรยาย</h2>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="auto">🤖 Auto Whisper</button>
+        <button class="tab" data-tab="upload">📤 อัปโหลด SRT</button>
+        <button class="tab" data-tab="manual">✍️ พิมพ์เอง</button>
+      </div>
+
+      <div class="tab-panel active" data-panel="auto">
+        <p class="muted" style="font-size:12px;margin:0 0 10px">ถอดเสียงจากคลิปแรกที่มี audio อัตโนมัติด้วย faster-whisper แล้วเผาเข้าวิดีโอ</p>
+        <div class="style-row">
+          <div>
+            <label>โมเดล</label>
+            <select id="whisper-model">
+              <option value="tiny">tiny (เร็วสุด · พอใช้)</option>
+              <option value="base">base</option>
+              <option value="small" selected>small (แนะนำ · ไทยแม่น)</option>
+              <option value="medium">medium (แม่น · ช้า)</option>
+              <option value="large-v3">large-v3 (แม่นสุด · GPU only)</option>
+            </select>
+          </div>
+          <div>
+            <label>ภาษา</label>
+            <select id="whisper-lang">
+              <option value="auto" selected>Auto-detect</option>
+              <option value="th">ไทย</option>
+              <option value="en">English</option>
+              <option value="zh">中文</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" id="whisper-btn" disabled>🎙️ ถอดเสียง</button>
+          <span class="muted" id="whisper-status" style="font-size:12px"></span>
+        </div>
+        <div class="progress hidden" id="whisper-progress"><div style="width:0%"></div></div>
+      </div>
+
+      <div class="tab-panel" data-panel="upload">
+        <p class="muted" style="font-size:12px;margin:0 0 10px">อัปโหลดไฟล์ SRT หรือ VTT ที่มีอยู่แล้ว</p>
+        <input type="file" id="srt-input" accept=".srt,.vtt,text/plain" style="margin-bottom:10px">
+        <div class="row">
+          <button class="btn ghost" id="srt-load-btn" disabled>📥 โหลดเข้า editor</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="manual">
+        <p class="muted" style="font-size:12px;margin:0 0 10px">พิมพ์ SRT เอง — รูปแบบ <code>index\nstart --&gt; end\ntext</code> เว้นบรรทัด</p>
+        <textarea id="srt-text" placeholder="1
+00:00:00,000 --> 00:00:03,000
+สวัสดีครับ
+
+2
+00:00:03,000 --> 00:00:06,500
+นี่คือซับแรกของฉัน"></textarea>
+        <div class="row" style="margin-top:8px;justify-content:space-between">
+          <span class="muted" id="srt-stats" style="font-size:11px">0 cues</span>
+          <button class="btn ghost sm" id="srt-clear-btn">🗑 ล้าง</button>
+        </div>
+      </div>
+
+      <div style="margin-top:14px">
+        <label class="row" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);text-transform:none;letter-spacing:0;margin:0">
+          <input type="checkbox" id="use-subs" checked style="width:auto;margin:0">
+          <span>เผาซับลงวิดีโอ (ถ้าไม่ติ๊ก จะต่อฉากอย่างเดียว)</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. สไตล์ซับ</h2>
+      <div class="row">
+        <label style="flex:1;margin:0">
+          <span style="font-size:11px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">Preset</span>
+          <select id="style-preset">
+            <option value="tiktok" selected>TikTok (bold bottom, white + black outline)</option>
+            <option value="cinema">Cinema (smaller, shadow)</option>
+            <option value="highlight">Highlight (yellow text + black box)</option>
+            <option value="top">Top center (caption style)</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+      </div>
+      <div class="style-row" style="margin-top:10px">
+        <div>
+          <label>Font</label>
+          <input type="text" id="style-font" value="Noto Sans Thai">
+        </div>
+        <div>
+          <label>Size</label>
+          <input type="number" id="style-size" value="56" min="16" max="120">
+        </div>
+      </div>
+      <div class="style-row">
+        <div>
+          <label>สีตัวอักษร</label>
+          <div class="color-pick">
+            <input type="color" id="style-color-pick" value="#ffffff">
+            <input type="text" id="style-color" value="&H00FFFFFF" style="flex:1">
+          </div>
+        </div>
+        <div>
+          <label>สี outline</label>
+          <div class="color-pick">
+            <input type="color" id="style-outline-pick" value="#000000">
+            <input type="text" id="style-outline" value="&H00000000" style="flex:1">
+          </div>
+        </div>
+      </div>
+      <div class="style-row">
+        <div>
+          <label>ความหนา outline</label>
+          <input type="number" id="style-outline-w" value="3" min="0" max="10">
+        </div>
+        <div>
+          <label>ตำแหน่ง</label>
+          <select id="style-align">
+            <option value="2" selected>ล่างกลาง (bottom center)</option>
+            <option value="1">ล่างซ้าย (bottom left)</option>
+            <option value="3">ล่างขวา (bottom right)</option>
+            <option value="8">บนกลาง (top center)</option>
+            <option value="6">กลางกลาง (middle center)</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="toast-container" id="toasts"></div>
+
+<footer>
+  SceneStitch · ffmpeg + faster-whisper · single-process FastAPI
+</footer>
+
+<script>
+"use strict";
+
+// ---------- state ----------
+const STATE = {
+  files: [],         // [{file_id, name, size, path, meta}]
+  job: null,
+  whisperJob: null,
+  srtText: "",
+  selectedFileIdForWhisper: null,
+};
+
+// ---------- utils ----------
+const $ = (id) => document.getElementById(id);
+const $$ = (sel, root=document) => root.querySelectorAll(sel);
+
+function toast(msg, kind="ok", ttl=3000) {
+  const t = document.createElement("div");
+  t.className = "toast " + kind;
+  t.textContent = msg;
+  $("toasts").appendChild(t);
+  setTimeout(() => { t.style.opacity="0"; t.style.transform="translateX(20px)"; setTimeout(()=>t.remove(), 250); }, ttl);
+}
+
+function humanSize(b) {
+  if (!b) return "0 B";
+  const u = ["B","KB","MB","GB"]; let i = 0;
+  while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
+  return b.toFixed(b >= 10 ? 0 : 1) + " " + u[i];
+}
+
+function humanDur(s) {
+  if (!s) return "—";
+  s = Math.round(s);
+  const m = Math.floor(s/60), ss = s%60;
+  return `${m}:${String(ss).padStart(2,"0")}`;
+}
+
+async function api(path, opts={}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const j = await r.json(); msg = j.detail || j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+function fileExt(name) { return (name.split(".").pop() || "").toLowerCase(); }
+
+function isVideo(f) {
+  if (f.type && f.type.startsWith("video/")) return true;
+  const ext = fileExt(f.name);
+  return ["mp4","mov","mkv","webm","m4v","avi","flv","ts"].includes(ext);
+}
+
+// ---------- health ----------
+async function refreshHealth() {
+  try {
+    const h = await api("/api/health");
+    $("ffmpeg-badge").textContent = "ffmpeg: " + (h.ffmpeg ? "✓" : "✗");
+    $("ffmpeg-badge").className = "badge " + (h.ffmpeg ? "ok" : "err");
+    $("whisper-badge").textContent = "whisper: " + (h.whisper_loaded ? "✓ " + h.whisper_model : "พร้อมใช้ (โหลดเมื่อกด)");
+    $("whisper-badge").className = "badge ok";
+  } catch (e) {
+    $("ffmpeg-badge").textContent = "ffmpeg: error";
+    $("ffmpeg-badge").className = "badge err";
+  }
+}
+refreshHealth();
+
+// ---------- upload ----------
+const dropzone = $("dropzone");
+const fileInput = $("file-input");
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("drag");
+  uploadFiles([...e.dataTransfer.files].filter(isVideo));
+});
+fileInput.addEventListener("change", () => {
+  uploadFiles([...fileInput.files].filter(isVideo));
+  fileInput.value = "";
+});
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  try {
+    toast(`อัปโหลด ${files.length} ไฟล์…`, "ok");
+    const r = await api("/api/upload", { method: "POST", body: fd });
+    // Filter out duplicates by file_id
+    const existing = new Set(STATE.files.map(f => f.file_id));
+    for (const f of r.files) {
+      if (!existing.has(f.file_id)) STATE.files.push(f);
+    }
+    renderVList();
+    updateRenderBtn();
+    toast(`อัปโหลดสำเร็จ ${r.files.length} ไฟล์`, "ok");
+  } catch (e) {
+    toast("อัปโหลดล้มเหลว: " + e.message, "err", 5000);
+  }
+}
+
+// ---------- video list ----------
+function renderVList() {
+  const root = $("vlist");
+  root.innerHTML = "";
+  $("vcount").textContent = `${STATE.files.length} ไฟล์`;
+  if (!STATE.files.length) {
+    root.innerHTML = '<div class="empty">ยังไม่มีวิดีโอ — ลากไฟล์มาวางด้านบน หรือคลิกเลือก</div>';
+    $("whisper-btn").disabled = true;
+    return;
+  }
+  STATE.files.forEach((f, idx) => {
+    const el = document.createElement("div");
+    el.className = "vitem";
+    el.draggable = true;
+    el.dataset.idx = idx;
+    const m = f.meta || {};
+    el.innerHTML = `
+      <div class="num">${idx+1}</div>
+      <video src="${f.path}" muted preload="metadata"></video>
+      <div class="info">
+        <div class="name">${escapeHtml(f.name)}</div>
+        <div class="meta">${m.width||"?"}×${m.height||"?"} · ${m.fps||"?"}fps · ${humanDur(m.duration)} · ${humanSize(f.size)} ${m.has_audio?'· 🔊':'· 🔇'}</div>
+      </div>
+      <button class="x" title="ลบ">✕</button>
+    `;
+    // drag-drop reorder
+    el.addEventListener("dragstart", (e) => {
+      el.classList.add("dragging");
+      e.dataTransfer.setData("text/plain", String(idx));
+      e.dataTransfer.effectAllowed = "move";
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+    el.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+    el.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const from = parseInt(e.dataTransfer.getData("text/plain"));
+      const to = parseInt(el.dataset.idx);
+      if (from === to) return;
+      const item = STATE.files.splice(from, 1)[0];
+      STATE.files.splice(to, 0, item);
+      renderVList();
+    });
+    el.querySelector(".x").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await api(`/api/files/${f.file_id}`, { method: "DELETE" });
+        STATE.files = STATE.files.filter(x => x.file_id !== f.file_id);
+        renderVList();
+        updateRenderBtn();
+        toast("ลบ " + f.name, "ok", 1500);
+      } catch (err) { toast("ลบไม่ได้: " + err.message, "err"); }
+    });
+    root.appendChild(el);
+  });
+  // whisper button: enable if at least one file has audio
+  const hasAudio = STATE.files.some(f => (f.meta||{}).has_audio);
+  $("whisper-btn").disabled = !hasAudio;
+  if (!hasAudio) $("whisper-status").textContent = "(ไม่มีไฟล์ที่มีเสียง)";
+  else $("whisper-status").textContent = "";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---------- tabs ----------
+$$(".tab").forEach(t => {
+  t.addEventListener("click", () => {
+    $$(".tab").forEach(x => x.classList.remove("active"));
+    $$(".tab-panel").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    $(`[data-panel="${t.dataset.tab}"]`).classList.add("active");
+  });
+});
+
+// ---------- srt editor ----------
+const srtTextEl = $("srt-text");
+srtTextEl.addEventListener("input", () => {
+  STATE.srtText = srtTextEl.value;
+  updateSrtStats();
+});
+$("srt-clear-btn").addEventListener("click", () => {
+  if (!confirm("ล้างซับ?")) return;
+  srtTextEl.value = "";
+  STATE.srtText = "";
+  updateSrtStats();
+});
+
+function updateSrtStats() {
+  const text = srtTextEl.value.trim();
+  if (!text) { $("srt-stats").textContent = "0 cues"; return; }
+  // count cues by "-->" pattern
+  const cues = (text.match(/-->/g) || []).length;
+  $("srt-stats").textContent = `${cues} cues · ${humanSize(text.length)}`;
+}
+
+// ---------- upload srt ----------
+$("srt-input").addEventListener("change", () => {
+  $("srt-load-btn").disabled = !$("srt-input").files.length;
+});
+$("srt-load-btn").addEventListener("click", async () => {
+  const f = $("srt-input").files[0];
+  if (!f) return;
+  const text = await f.text();
+  srtTextEl.value = text;
+  STATE.srtText = text;
+  updateSrtStats();
+  // switch to manual tab to show result
+  $$(".tab").forEach(x => x.classList.remove("active"));
+  $$(".tab-panel").forEach(x => x.classList.remove("active"));
+  document.querySelector('[data-tab="manual"]').classList.add("active");
+  $('[data-panel="manual"]').classList.add("active");
+  toast("โหลด SRT เข้า editor แล้ว", "ok");
+});
+
+// ---------- whisper ----------
+$("whisper-btn").addEventListener("click", async () => {
+  // pick first file with audio
+  const target = STATE.files.find(f => (f.meta||{}).has_audio);
+  if (!target) { toast("ไม่มีไฟล์ที่มีเสียง", "err"); return; }
+  $("whisper-btn").disabled = true;
+  $("whisper-status").innerHTML = '<span class="spin"></span> กำลังส่งงาน…';
+  $("whisper-progress").classList.remove("hidden");
+  $("whisper-progress").firstElementChild.style.width = "5%";
+  try {
+    const fd = new FormData();
+    fd.append("file_id", target.file_id);
+    fd.append("model", $("whisper-model").value);
+    fd.append("language", $("whisper-lang").value);
+    const r = await api("/api/jobs/whisper", { method: "POST", body: fd });
+    STATE.whisperJob = r.job_id;
+    pollWhisper(r.job_id);
+  } catch (e) {
+    $("whisper-btn").disabled = false;
+    $("whisper-status").textContent = "";
+    $("whisper-progress").classList.add("hidden");
+    toast("Whisper ล้มเหลว: " + e.message, "err", 5000);
+  }
+});
+
+async function pollWhisper(jobId) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 800));
+    let j;
+    try { j = await api(`/api/jobs/${jobId}`); }
+    catch (e) { $("whisper-status").textContent = "ขาดการเชื่อมต่อ"; break; }
+    if (j.status === "running") {
+      $("whisper-progress").firstElementChild.style.width = (j.progress*100).toFixed(0) + "%";
+      $("whisper-status").textContent = j.message || "กำลังทำงาน…";
+    } else if (j.status === "done") {
+      $("whisper-progress").firstElementChild.style.width = "100%";
+      $("whisper-status").textContent = j.message || "เสร็จ";
+      // load srt
+      const srt = await fetch(`/api/srt/${jobId}`).then(r => r.text());
+      srtTextEl.value = srt;
+      STATE.srtText = srt;
+      updateSrtStats();
+      // switch to manual
+      $$(".tab").forEach(x => x.classList.remove("active"));
+      $$(".tab-panel").forEach(x => x.classList.remove("active"));
+      document.querySelector('[data-tab="manual"]').classList.add("active");
+      $('[data-panel="manual"]').classList.add("active");
+      toast(`Whisper เสร็จ · ${j.meta.segments} cues (${j.meta.language})`, "ok", 4000);
+      setTimeout(() => $("whisper-progress").classList.add("hidden"), 1500);
+      $("whisper-btn").disabled = false;
+      break;
+    } else if (j.status === "error") {
+      $("whisper-status").textContent = "ผิดพลาด: " + (j.error || "");
+      toast("Whisper error: " + (j.error || "?"), "err", 5000);
+      $("whisper-progress").classList.add("hidden");
+      $("whisper-btn").disabled = false;
+      break;
+    } else if (j.status === "cancelled") {
+      $("whisper-status").textContent = "ยกเลิก";
+      $("whisper-progress").classList.add("hidden");
+      $("whisper-btn").disabled = false;
+      break;
+    }
+  }
+}
+
+// ---------- style ----------
+const PRESETS = {
+  tiktok:    {font:"Noto Sans Thai", size:56, color:"&H00FFFFFF", outline:"&H00000000", outlineW:3, align:"2"},
+  cinema:    {font:"Noto Sans Thai", size:42, color:"&H00FFFFFF", outline:"&H00000000", outlineW:2, align:"2"},
+  highlight: {font:"Noto Sans Thai", size:52, color:"&H0000FFFF", outline:"&H00000000", outlineW:2, align:"2"},
+  top:       {font:"Noto Sans Thai", size:44, color:"&H00FFFFFF", outline:"&H00000000", outlineW:2, align:"8"},
+};
+
+function applyPreset(p) {
+  if (!PRESETS[p]) return;
+  const s = PRESETS[p];
+  $("style-font").value = s.font;
+  $("style-size").value = s.size;
+  $("style-color").value = s.color;
+  $("style-outline").value = s.outline;
+  $("style-outline-w").value = s.outlineW;
+  $("style-align").value = s.align;
+  syncColorPick("style-color", "style-color-pick");
+  syncColorPick("style-outline", "style-outline-pick");
+}
+
+$("style-preset").addEventListener("change", (e) => {
+  if (e.target.value !== "custom") applyPreset(e.target.value);
+});
+
+function syncColorPick(textId, pickId) {
+  const v = $(textId).value;
+  // &H00BBGGRR -> #RRGGBB
+  const m = v.match(/&H([0-9A-Fa-f]{6,8})/);
+  if (m) {
+    let hex = m[1].slice(-6);
+    const r = hex.slice(0,2), g = hex.slice(2,4), b = hex.slice(4,6);
+    $(pickId).value = "#" + r + g + b;
+  }
+}
+
+$("style-color-pick").addEventListener("input", (e) => {
+  const c = e.target.value.slice(1); // RRGGBB
+  const r = c.slice(0,2), g = c.slice(2,4), b = c.slice(4,6);
+  $("style-color").value = "&H00" + b + g + r; // ASS BGR
+});
+$("style-outline-pick").addEventListener("input", (e) => {
+  const c = e.target.value.slice(1);
+  const r = c.slice(0,2), g = c.slice(2,4), b = c.slice(4,6);
+  $("style-outline").value = "&H00" + b + g + r;
+});
+
+applyPreset("tiktok");
+syncColorPick("style-color", "style-color-pick");
+syncColorPick("style-outline", "style-outline-pick");
+
+function getStyle() {
+  return {
+    font: $("style-font").value || "Noto Sans Thai",
+    size: parseInt($("style-size").value) || 48,
+    color: $("style-color").value || "&H00FFFFFF",
+    outline_color: $("style-outline").value || "&H00000000",
+    back_color: "&H80000000",
+    bold: true,
+    outline_width: parseInt($("style-outline-w").value) || 2,
+    shadow: 0,
+    align: parseInt($("style-align").value) || 2,
+    margin_v: 80,
+    margin_l: 40,
+    margin_r: 40,
+  };
+}
+
+// ---------- render ----------
+function updateRenderBtn() {
+  const ok = STATE.files.length >= 1;
+  $("render-btn").disabled = !ok || STATE.job === "running";
+}
+
+$("render-btn").addEventListener("click", async () => {
+  if (!STATE.files.length) return;
+  const srt = $("use-subs").checked ? (srtTextEl.value || "") : "";
+  const payload = {
+    inputs: STATE.files.map(f => ({ file_id: f.file_id })),
+    srt_text: srt,
+    srt_kind: "srt",
+    style: getStyle(),
+    output_settings: {
+      transition: $("transition").value,
+      fade_duration: parseFloat($("fade_duration").value) || 0.5,
+    },
+  };
+  $("render-btn").disabled = true;
+  $("cancel-btn").disabled = false;
+  $("final-box").classList.add("hidden");
+  $("render-progress").classList.remove("hidden");
+  $("render-log").classList.add("hidden");
+  $("render-progress").firstElementChild.style.width = "5%";
+  $("render-status").textContent = "กำลังเริ่ม…";
+  STATE.job = "running";
+  try {
+    const r = await api("/api/jobs/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    pollRender(r.job_id);
+  } catch (e) {
+    toast("Render ล้มเหลว: " + e.message, "err", 5000);
+    $("render-btn").disabled = false;
+    $("cancel-btn").disabled = true;
+    STATE.job = null;
+  }
+});
+
+$("cancel-btn").addEventListener("click", async () => {
+  if (!STATE.currentJobId) return;
+  try { await api(`/api/jobs/${STATE.currentJobId}/cancel`, { method: "POST" }); toast("กำลังยกเลิก…", "warn"); } catch {}
+});
+
+$("rerender-btn").addEventListener("click", () => $("render-btn").click());
+
+async function pollRender(jobId) {
+  STATE.currentJobId = jobId;
+  while (true) {
+    await new Promise(r => setTimeout(r, 700));
+    let j;
+    try { j = await api(`/api/jobs/${jobId}`); }
+    catch (e) { $("render-status").textContent = "ขาดการเชื่อมต่อ"; break; }
+    if (j.status === "queued" || j.status === "running") {
+      $("render-progress").firstElementChild.style.width = (Math.max(j.progress, 0.05) * 100).toFixed(0) + "%";
+      $("render-status").textContent = j.message || "กำลังทำงาน…";
+    } else if (j.status === "done") {
+      $("render-progress").firstElementChild.style.width = "100%";
+      $("render-status").textContent = j.message || "เสร็จ";
+      $("final-video").src = j.output_url + "?t=" + Date.now();
+      $("download-btn").href = j.output_url;
+      $("download-btn").download = "scenestitch_" + jobId + ".mp4";
+      $("final-box").classList.remove("hidden");
+      toast("Render เสร็จ 🎉", "ok", 4000);
+      // show log tail
+      if (j.log_tail && j.log_tail.length) {
+        $("render-log").classList.remove("hidden");
+        $("render-log").textContent = j.log_tail.join("\n");
+      }
+      $("render-btn").disabled = false;
+      $("cancel-btn").disabled = true;
+      STATE.job = null;
+      STATE.currentJobId = null;
+      break;
+    } else if (j.status === "error") {
+      $("render-status").innerHTML = '<span style="color:var(--err)">ผิดพลาด: ' + escapeHtml(j.error || "?") + "</span>";
+      toast("Render error: " + (j.error || "?"), "err", 5000);
+      if (j.log_tail && j.log_tail.length) {
+        $("render-log").classList.remove("hidden");
+        $("render-log").textContent = j.log_tail.join("\n");
+      }
+      $("render-btn").disabled = false;
+      $("cancel-btn").disabled = true;
+      STATE.job = null;
+      STATE.currentJobId = null;
+      break;
+    } else if (j.status === "cancelled") {
+      $("render-status").textContent = "ยกเลิกแล้ว";
+      $("render-btn").disabled = false;
+      $("cancel-btn").disabled = true;
+      STATE.job = null;
+      STATE.currentJobId = null;
+      break;
+    }
+  }
+}
+
+// init
+renderVList();
+updateSrtStats();
+</script>
+
+</body>
+</html>

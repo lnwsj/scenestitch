@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App runtime data
+data/
+logs/
+*.log
+.env
+.env.local
+
+# Test artifacts
+*.mp4
+!docs/**/*.mp4
+*.ass
+*.srt
+!tests/fixtures/**/*.srt
+
+# Service file (deploy-specific, copy from repo to /etc/systemd/system manually)
+*.service
+!scenestitch.service

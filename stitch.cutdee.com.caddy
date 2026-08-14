@@ -1,0 +1,36 @@
+# SceneStitch - stitch.cutdee.com
+# Upstream: scenestitch-app.service on 127.0.0.1:38768
+# Stack: FastAPI + faster-whisper (GPU) + ffmpeg-cuda-v6
+# SSL: automatic via Caddy + Let's Encrypt (DNS A record must point to 110.164.146.205)
+
+http://stitch.cutdee.com {
+    redir https://stitch.cutdee.com{uri} permanent
+}
+
+https://stitch.cutdee.com {
+    encode zstd gzip
+    request_body {
+        max_size 2048MB
+    }
+    reverse_proxy 127.0.0.1:38768 {
+        transport http {
+            dial_timeout 10s
+            read_timeout 3600s
+            write_timeout 3600s
+        }
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    log {
+        output file /var/log/caddy/stitch.cutdee.com.access.log {
+            roll_size 20MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+}
