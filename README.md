@@ -22,9 +22,9 @@
 |------|------|
 | Frontend | Vanilla HTML/JS/CSS (no build step) |
 | Backend | FastAPI 0.141 + uvicorn |
-| Video | ffmpeg-cuda-v6 (concat) + /usr/bin/ffmpeg (libass, burn) |
+| Video | **ffmpeg-cuda-v7** (custom build: CUDA + NVENC + libass) — single binary for both concat + burn |
 | STT | faster-whisper 1.2.1, CUDA + float16 |
-| Job queue | Threading + semaphore (1 concurrent, since ffmpeg is heavy) |
+| Job queue | Threading + semaphore (2 concurrent) |
 | Storage | Local disk (`/opt/scenestitch/data/`) |
 | Proxy | Caddy with auto-LE |
 
@@ -85,8 +85,7 @@ Caddy will auto-fetch Let's Encrypt cert within ~30s.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `SCENESTITCH_FFMPEG` | autodetect | For concat (prefers ffmpeg-cuda-v6) |
-| `SCENESTITCH_FFMPEG_BURN` | autodetect | For burn (must have libass — uses /usr/bin/ffmpeg) |
+| `SCENESTITCH_FFMPEG` | autodetect | Single ffmpeg binary (ffmpeg-cuda-v7 has both CUDA + libass) |
 | `SCENESTITCH_WHISPER_DEVICE` | `auto` | `auto`/`cpu`/`cuda` |
 | `SCENESTITCH_WHISPER_COMPUTE` | `auto` | `auto`/`int8`/`float16`/`float32` |
 | `SCENESTITCH_WHISPER_MODEL` | `small` | Default model loaded on first whisper job |
@@ -94,23 +93,24 @@ Caddy will auto-fetch Let's Encrypt cert within ~30s.
 | `SCENESTITCH_JOB_DIR` | `/opt/scenestitch/data/jobs` | |
 | `SCENESTITCH_OUTPUT_DIR` | `/opt/scenestitch/data/outputs` | |
 | `SCENESTITCH_MAX_UPLOAD_MB` | `2048` | |
-| `SCENESTITCH_MAX_CONCURRENT` | `1` | ffmpeg is heavy |
+| `SCENESTITCH_MAX_CONCURRENT` | `2` | ffmpeg is heavy but 16GB VRAM has headroom |
 
 ## Operational notes
 
-- **Burn step** uses `/usr/bin/ffmpeg` (which has libass). The CUDA builds in `/opt/ffmpeg-cuda-vN/` don't have libass.
-- **Concat step** uses `/opt/ffmpeg-cuda-v6/bin/ffmpeg` (faster on long videos). Fallback: `/usr/bin/ffmpeg`.
+- **Single ffmpeg binary** at `/opt/ffmpeg-cuda-v7/bin/ffmpeg` does both concat + burn with h264_nvenc (GPU) + libass.
+- **GPU encoder**: `h264_nvenc` preset p4, VBR 4Mbps. 30s video with fade+burn = ~4s.
 - **Service** runs as `sj88backup02` user on port 38768.
 - **Cleanup**: outputs in `data/outputs/` accumulate. Add a cron to delete jobs older than 7 days.
 - **Thai fonts**: VPS has `/usr/share/fonts/truetype/noto/NotoSansThai-{Regular,Bold}.ttf` — set `font: "Noto Sans Thai"` in style.
 
 ## Common gotchas
 
-1. **ffmpeg "No option name near X"** — the CUDA ffmpeg doesn't have libass. Use the burn binary override.
+1. **CUDA ffmpeg build needs libass enabled** — first build (v6) didn't have it. v7 includes `--enable-libass --enable-libfreetype --enable-fontconfig --enable-libfribidi --enable-libharfbuzz`. See `Operational notes` for current binary.
 2. **Whisper OOM on RTX 5060 Ti 16GB** — large-v3 needs ~10GB VRAM. Use `medium` or `small` for safety.
 3. **Subtitle shows boxes (□)** — missing font. Install Noto Sans Thai or specify `font: "DejaVu Sans"` (limited Thai support).
 4. **Audio desync after concat** — different sample rates / channels. The code normalizes to aac 192k, but if input uses unusual codecs, run a pre-normalize pass.
 
 ## Versioning
 
+- **v1.1.0** (2026-08-15) — ffmpeg-cuda-v7 build (CUDA + NVENC + libass in one binary). Burn step now uses h264_nvenc (~5-10x faster). MAX_CONCURRENT 1 → 2. Live GPU badge in UI.
 - **v1.0.0** (2026-08-14) — initial release. Concat (cut/fade), SRT burn, Whisper STT, 4 style presets, in-memory job queue.

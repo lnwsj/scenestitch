@@ -9,8 +9,7 @@ User=sj88backup02
 Group=sj88backup02
 WorkingDirectory=/opt/scenestitch
 Environment="PATH=/opt/scenestitch/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="SCENESTITCH_FFMPEG=/opt/ffmpeg-cuda-v6/bin/ffmpeg"
-Environment="SCENESTITCH_FFMPEG_BURN=/usr/bin/ffmpeg"
+Environment="SCENESTITCH_FFMPEG=/opt/ffmpeg-cuda-v7/bin/ffmpeg"
 Environment="SCENESTITCH_WHISPER_DEVICE=auto"
 Environment="SCENESTITCH_WHISPER_COMPUTE=auto"
 Environment="SCENESTITCH_UPLOAD_DIR=/opt/scenestitch/data/uploads"
