@@ -17,7 +17,7 @@ Environment="SCENESTITCH_UPLOAD_DIR=/opt/scenestitch/data/uploads"
 Environment="SCENESTITCH_JOB_DIR=/opt/scenestitch/data/jobs"
 Environment="SCENESTITCH_OUTPUT_DIR=/opt/scenestitch/data/outputs"
 Environment="SCENESTITCH_MAX_UPLOAD_MB=2048"
-Environment="SCENESTITCH_MAX_CONCURRENT=1"
+Environment="SCENESTITCH_MAX_CONCURRENT=2"
 ExecStart=/opt/scenestitch/venv/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 38768 --log-level info
 Restart=always
 RestartSec=5

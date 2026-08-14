@@ -132,6 +132,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px}
   <h1>🎬 Scene<span class="accent">Stitch</span><span class="ver">v1.0</span></h1>
   <span class="badge" id="ffmpeg-badge">ffmpeg: …</span>
   <span class="badge" id="whisper-badge">whisper: …</span>
+  <span class="badge" id="gpu-badge" title="GPU utilization (poll 3s)">gpu: …</span>
   <div class="spacer"></div>
   <a href="https://github.com/" target="_blank" class="muted" style="font-size:12px">docs</a>
 </header>
@@ -401,6 +402,37 @@ async function refreshHealth() {
   }
 }
 refreshHealth();
+
+// GPU badge — poll every 3s for live utilization
+function renderGpuBadge(g) {
+  const el = $("gpu-badge");
+  if (!g) {
+    el.textContent = "gpu: n/a";
+    el.className = "badge muted";
+    return;
+  }
+  const u = g.util_pct;
+  const mem = `${(g.mem_used_mb/1024).toFixed(1)}/${(g.mem_total_mb/1024).toFixed(0)}G`;
+  const temp = g.temp_c > 0 ? ` · ${g.temp_c}°C` : "";
+  el.textContent = `gpu: ${u}% · ${mem}${temp}`;
+  let cls = "badge";
+  if (u >= 80 || g.temp_c >= 80) cls += " err";
+  else if (u >= 40) cls += " warn";
+  else cls += " ok";
+  el.className = cls;
+  el.title = `${g.name} · ${g.power_w.toFixed(0)}W / ${g.power_limit_w.toFixed(0)}W · poll 3s`;
+}
+
+async function pollGpu() {
+  try {
+    const r = await api("/api/health/gpu");
+    renderGpuBadge(r.gpu);
+  } catch (e) {
+    renderGpuBadge(null);
+  }
+}
+pollGpu();
+setInterval(pollGpu, 3000);
 
 // ---------- upload ----------
 const dropzone = $("dropzone");

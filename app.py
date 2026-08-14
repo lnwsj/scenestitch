@@ -215,7 +215,67 @@ async def health():
         "max_concurrent": MAX_CONCURRENT_JOBS,
         "upload_dir": str(UPLOAD_DIR),
         "output_dir": str(OUTPUT_DIR),
+        "gpu": gpu_info(),
     }
+
+
+# ---------------------------------------------------------------------------
+# GPU info (nvidia-smi wrapper with caching)
+# ---------------------------------------------------------------------------
+_GPU_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+_GPU_LOCK = threading.Lock()
+_GPU_TTL = 2.0  # seconds
+
+
+def gpu_info() -> Optional[Dict[str, Any]]:
+    """Return nvidia-smi data, cached for 2s. None if nvidia-smi unavailable."""
+    now = time.time()
+    with _GPU_LOCK:
+        if _GPU_CACHE["data"] is not None and (now - _GPU_CACHE["ts"]) < _GPU_TTL:
+            return _GPU_CACHE["data"]
+    # Run nvidia-smi (no shell, split args)
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    try:
+        out = subprocess.run(
+            [
+                smi,
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        # Parse first GPU (we have 1 GPU per node)
+        line = out.stdout.strip().splitlines()[0]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 7:
+            return None
+        idx, name, util, mem_used, mem_total, temp, power, power_limit = parts[:8]
+        data = {
+            "index": int(idx),
+            "name": name,
+            "util_pct": int(util) if util.isdigit() else 0,
+            "mem_used_mb": int(mem_used) if mem_used.isdigit() else 0,
+            "mem_total_mb": int(mem_total) if mem_total.isdigit() else 0,
+            "temp_c": int(temp) if temp.isdigit() else 0,
+            "power_w": float(power) if power.replace(".", "").isdigit() else 0.0,
+            "power_limit_w": float(power_limit) if power_limit.replace(".", "").isdigit() else 0.0,
+        }
+        with _GPU_LOCK:
+            _GPU_CACHE["ts"] = now
+            _GPU_CACHE["data"] = data
+        return data
+    except Exception:
+        return None
+
+
+@app.get("/api/health/gpu")
+async def health_gpu():
+    """Dedicated GPU endpoint (for frequent polling without other health fields)."""
+    return {"gpu": gpu_info()}
 
 
 # ---------------------------------------------------------------------------
