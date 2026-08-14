@@ -144,9 +144,14 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px}
       <label class="dropzone" id="dropzone">
         <div class="big">📥</div>
         <p><strong>ลากไฟล์มาวาง</strong> หรือคลิกเพื่อเลือก</p>
-        <p class="hint">mp4 / mov / mkv · สูงสุด 2 GB / ไฟล์ · เรียงลำดับด้วยการลาก</p>
+        <p class="hint">mp4 / mov / mkv · สูงสุด 2 GB / ไฟล์ · เรียงลำดับด้วยการลาก หรือกด Sort A-Z</p>
         <input type="file" id="file-input" accept="video/*" multiple style="display:none">
       </label>
+      <div class="row" style="margin-top:10px" id="sort-row" hidden>
+        <button class="btn ghost sm" id="sort-az-btn" title="เรียงตามชื่อไฟล์ A-Z">🔤 เรียง A-Z</button>
+        <button class="btn ghost sm" id="sort-reset-btn" title="กลับเป็นลำดับเดิมที่อัปโหลด">↩️ ลำดับเดิม</button>
+        <span class="right muted" style="font-size:11px" id="sort-hint">ลากเพื่อสลับเองก็ได้</span>
+      </div>
       <div class="vlist" id="vlist"></div>
     </section>
 
@@ -330,7 +335,8 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px}
 
 // ---------- state ----------
 const STATE = {
-  files: [],         // [{file_id, name, size, path, meta}]
+  files: [],         // [{file_id, name, size, path, meta}] - current order
+  originalOrder: [], // [file_id] - upload order, for "reset"
   job: null,
   whisperJob: null,
   srtText: "",
@@ -422,7 +428,10 @@ async function uploadFiles(files) {
     // Filter out duplicates by file_id
     const existing = new Set(STATE.files.map(f => f.file_id));
     for (const f of r.files) {
-      if (!existing.has(f.file_id)) STATE.files.push(f);
+      if (!existing.has(f.file_id)) {
+        STATE.files.push(f);
+        STATE.originalOrder.push(f.file_id);
+      }
     }
     renderVList();
     updateRenderBtn();
@@ -432,11 +441,33 @@ async function uploadFiles(files) {
   }
 }
 
+// ---------- sort buttons ----------
+$("sort-az-btn").addEventListener("click", () => {
+  if (STATE.files.length < 2) return;
+  // Natural sort (so "scene 2" comes before "scene 10")
+  STATE.files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  renderVList();
+  toast(`เรียง A-Z แล้ว · ${STATE.files.length} ไฟล์`, "ok", 1500);
+});
+
+$("sort-reset-btn").addEventListener("click", () => {
+  if (STATE.files.length < 2) return;
+  const byId = new Map(STATE.files.map(f => [f.file_id, f]));
+  STATE.files = STATE.originalOrder
+    .map(id => byId.get(id))
+    .filter(Boolean);
+  renderVList();
+  toast("กลับเป็นลำดับเดิมที่อัปโหลด", "ok", 1500);
+});
+
 // ---------- video list ----------
 function renderVList() {
   const root = $("vlist");
   root.innerHTML = "";
   $("vcount").textContent = `${STATE.files.length} ไฟล์`;
+  // Show/hide sort row
+  const sortRow = $("sort-row");
+  if (sortRow) sortRow.hidden = STATE.files.length < 2;
   if (!STATE.files.length) {
     root.innerHTML = '<div class="empty">ยังไม่มีวิดีโอ — ลากไฟล์มาวางด้านบน หรือคลิกเลือก</div>';
     $("whisper-btn").disabled = true;
